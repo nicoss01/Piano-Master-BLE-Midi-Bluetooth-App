@@ -49,7 +49,7 @@ Elle est conçue pour l'apprentissage, offrant un mode "Pas à pas" qui attend q
 
 1.  Lancez l'application :
     ```bash
-    python gui.py
+    python main.py
     ```
 2.  Cliquez sur **"Connecter Piano"** pour scanner et appairer votre instrument.
 3.  Cliquez sur **"Ouvrir fichier MIDI"** pour charger une partition (`.mid`).
@@ -99,7 +99,7 @@ L'application crée automatiquement un fichier `piano_config.json` pour mémoris
 
 1.  Run the script:
     ```bash
-    python gui.py
+    python main.py
     ```
 2.  Click **"Connecter Piano"** (Connect Piano) to scan and pair your device.
 3.  Click **"Ouvrir fichier MIDI"** (Open MIDI) to load a song (`.mid`).
