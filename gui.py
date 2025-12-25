@@ -1,52 +1,109 @@
+"""
+Piano Bluetooth Master v3.0
+Visualisation de partition corrigée pour piano deux mains
+"""
+
 import asyncio
 import threading
 import os
 import json
 import time
-from tkinter import filedialog, messagebox
-import customtkinter as ctk  # pip install customtkinter
+from tkinter import filedialog
+import customtkinter as ctk
 from bleak import BleakClient, BleakScanner
 import mido
 
-# --- CONFIGURATION GLOBALE ---
-ctk.set_appearance_mode("Light")
+# --- CONFIGURATION ---
+ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 CONFIG_FILE = "piano_config.json"
+
+# --- COULEURS ---
+class Colors:
+    BG_DARK = "#0D1117"
+    BG_CARD = "#161B22"
+    BG_ELEVATED = "#21262D"
+    
+    STAFF_LINE = "#4A5568"
+    STAFF_BG = "#1A1F2A"
+    
+    NOTE_PAST = "#3D4450"
+    NOTE_CURRENT = "#FBBF24"
+    NOTE_FUTURE = "#60A5FA"
+    
+    ACCENT_PRIMARY = "#8B5CF6"
+    ACCENT_SUCCESS = "#10B981"
+    
+    TEXT_PRIMARY = "#F0F6FC"
+    TEXT_SECONDARY = "#8B949E"
+    TEXT_MUTED = "#484F58"
+    
+    RIGHT_HAND = "#10B981"
+    LEFT_HAND = "#F59E0B"
+    PLAYHEAD = "#EF4444"
 
 # --- UTILITAIRES MUSIQUE ---
 NOTE_NAMES = ['Do', 'Do#', 'Ré', 'Ré#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si']
 
 def get_note_name(note_number):
-    """Convertit 60 en 'Do4'"""
     octave = note_number // 12 - 1
     name = NOTE_NAMES[note_number % 12]
     return f"{name}{octave}"
 
-def get_staff_position(midi_note, clef="treble"):
-    """Calcule la position verticale relative sur la portée."""
-    # Mapping des degrés de la gamme C Majeur (ignorer altérations pour la hauteur visuelle)
-    # C=0, D=1, E=2, F=3, G=4, A=5, B=6
-    semitone_to_degree = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6]
+def is_sharp(midi_note):
+    return (midi_note % 12) in [1, 3, 6, 8, 10]
+
+def note_to_staff_position(midi_note):
+    """
+    Convertit une note MIDI en position sur la portée.
+    Retourne (position, clef) où position est le nombre de demi-interlignes
+    depuis la ligne centrale de la portée concernée.
+    
+    Clé de Sol: ligne du milieu = Si4 (B4, MIDI 71)
+    Clé de Fa: ligne du milieu = Ré3 (D3, MIDI 50)
+    """
+    # Table: pour chaque note dans l'octave, sa position relative (en lignes/interlignes)
+    # Do=0, Ré=1, Mi=2, Fa=3, Sol=4, La=5, Si=6
+    note_positions = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6]  # dièses sur même ligne que naturelle
     
     octave = midi_note // 12
-    degree = semitone_to_degree[midi_note % 12]
+    note_in_octave = midi_note % 12
     
-    # Position absolue en "degrés" depuis C0
-    abs_pos = (octave * 7) + degree
+    # Position absolue depuis Do0
+    absolute_pos = octave * 7 + note_positions[note_in_octave]
     
-    if clef == "treble":
-        # Clé de Sol : La ligne du bas (Mi4 / E4) est la référence ?
-        # Standard : Sol4 (G4) est sur la 2ème ligne.
-        # G4 (67) -> oct 4, deg 4 -> 28+4 = 32
-        ref_pos = 32 
-        # Si ref_pos est à Y=0, alors abs_pos est à -(abs-ref) * demi_espace
-        return -(abs_pos - ref_pos) + 2 # +2 pour centrer sur la 2eme ligne
-    else:
-        # Clé de Fa : Fa3 (F3) sur la 4ème ligne (en partant du bas)
-        # F3 (53) -> oct 3, deg 3 -> 21+3 = 24
-        ref_pos = 24
-        return -(abs_pos - ref_pos)
+    # Choisir la clé selon la note
+    if midi_note >= 60:  # Do4 et au-dessus -> Clé de Sol
+        # Si4 (B4) = MIDI 71 -> octave 5, note 11 -> pos = 5*7 + 6 = 41
+        # Si4 est sur la ligne du milieu (position 0)
+        ref_pos = 5 * 7 + 6  # B4 = 41
+        return (ref_pos - absolute_pos, "treble")
+    else:  # Sous Do4 -> Clé de Fa
+        # Ré3 (D3) = MIDI 50 -> octave 4, note 2 -> pos = 4*7 + 1 = 29
+        ref_pos = 4 * 7 + 1  # D3 = 29
+        return (ref_pos - absolute_pos, "bass")
+
+
+class MidiEvent:
+    def __init__(self, time, note, velocity, duration=0.5):
+        self.time = time
+        self.note = note
+        self.velocity = velocity
+        self.duration = duration
+        
+    @property
+    def end_time(self):
+        return self.time + self.duration
+    
+    @property
+    def name(self):
+        return get_note_name(self.note)
+    
+    @property
+    def is_right_hand(self):
+        return self.note >= 60
+
 
 class BluetoothManager:
     def __init__(self, loop, input_callback=None):
@@ -57,7 +114,7 @@ class BluetoothManager:
         self.midi_uuid = None
         self.is_connected = False
         self.write_type = "write-without-response"
-        self.input_callback = input_callback 
+        self.input_callback = input_callback
         self.load_config()
 
     def load_config(self):
@@ -71,21 +128,17 @@ class BluetoothManager:
             except: pass
 
     def save_config(self):
-        config = {
-            'device_address': self.device_address,
-            'device_name': self.device_name,
-            'midi_uuid': self.midi_uuid
-        }
         try:
             with open(CONFIG_FILE, 'w') as f:
-                json.dump(config, f, indent=4)
+                json.dump({
+                    'device_address': self.device_address,
+                    'device_name': self.device_name,
+                    'midi_uuid': self.midi_uuid
+                }, f, indent=4)
         except: pass
 
-    async def connect(self, device=None, uuid=None):
-        # Si on passe un objet BLEDevice (découvert par scan), on l'utilise direct
-        # C'est plus fiable que l'adresse seule sur certains OS
+    async def connect(self, device=None):
         connect_target = device if device else self.device_address
-        
         if not connect_target:
             raise Exception("Aucun appareil spécifié.")
 
@@ -93,15 +146,10 @@ class BluetoothManager:
             self.device_address = device.address
             self.device_name = device.name
 
-        print(f"Connexion à {self.device_address}...")
-        
         try:
             self.client = BleakClient(connect_target)
             await self.client.connect()
-            
-            # Petit délai pour laisser Windows/Mac découvrir les services
             await asyncio.sleep(1.0)
-            
             await self.setup_characteristics()
             self.is_connected = True
             self.save_config()
@@ -115,7 +163,6 @@ class BluetoothManager:
         notify_char = None
         
         if not self.client.services:
-            # Force refresh si vide
             await self.client.get_services()
 
         for service in self.client.services:
@@ -127,31 +174,24 @@ class BluetoothManager:
                 elif "write" in props and not write_char:
                     write_char = char
                     self.write_type = "write"
-                
                 if "notify" in props:
                     notify_char = char
 
         if not write_char:
-            raise Exception("Pas de caractéristique d'écriture MIDI trouvée.")
+            raise Exception("Pas de caractéristique MIDI trouvée.")
         
         self.midi_uuid = write_char.uuid
-        print(f"✅ Write UUID: {self.midi_uuid} ({self.write_type})")
 
         if notify_char:
             try:
                 await self.client.start_notify(notify_char.uuid, self._on_notification)
-                print(f"👂 Listen UUID: {notify_char.uuid}")
-            except Exception as e:
-                print(f"⚠️ Erreur Listen: {e}")
-        else:
-            print("⚠️ Pas de UUID Listen trouvé (Mode One-Way).")
+            except: pass
 
     def _on_notification(self, sender, data):
         if len(data) >= 3:
-            # Recherche pattern Note On
             for i in range(len(data)-2):
                 byte = data[i]
-                if 0x90 <= byte <= 0x9F: 
+                if 0x90 <= byte <= 0x9F:
                     note = data[i+1]
                     velocity = data[i+2]
                     if velocity > 0 and self.input_callback:
@@ -163,8 +203,7 @@ class BluetoothManager:
                 packet = bytearray([0x80, 0x80] + list(data))
                 use_response = (self.write_type == "write")
                 await self.client.write_gatt_char(self.midi_uuid, packet, response=use_response)
-            except Exception as e:
-                print(f"Erreur envoi: {e}")
+            except: pass
 
     async def send_reset(self):
         if not self.is_connected: return
@@ -180,12 +219,365 @@ class BluetoothManager:
             except: pass
             self.is_connected = False
 
+
+class SheetMusicCanvas(ctk.CTkCanvas):
+    """Canvas pour afficher la partition de piano (deux portées)"""
+    
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, bg=Colors.STAFF_BG, highlightthickness=0, **kwargs)
+        
+        # Configuration visuelle
+        self.line_spacing = 14  # Espace entre les lignes de la portée
+        self.pixels_per_second = 150  # Vitesse de défilement horizontal
+        self.note_head_rx = 7  # Rayon horizontal de la tête de note
+        self.note_head_ry = 5  # Rayon vertical
+        self.margin_left = 80  # Marge pour clés
+        self.playhead_x = 200  # Position fixe de la tête de lecture
+        
+        # Positions verticales des portées
+        self.treble_center_y = 0  # Calculé dynamiquement
+        self.bass_center_y = 0
+        
+        # Données MIDI
+        self.events = []
+        self.current_time = 0.0
+        self.midi_duration = 0.0
+        
+        self.bind("<Configure>", self._on_configure)
+    
+    def _on_configure(self, event):
+        """Recalcule les positions quand le canvas change de taille"""
+        h = event.height
+        # Portée du haut (clé de sol) à 30% de la hauteur
+        self.treble_center_y = int(h * 0.30)
+        # Portée du bas (clé de fa) à 70% de la hauteur
+        self.bass_center_y = int(h * 0.70)
+        self.redraw()
+    
+    def load_midi(self, filepath):
+        """Charge un fichier MIDI"""
+        self.events = []
+        
+        try:
+            mid = mido.MidiFile(filepath)
+            
+            # Collecter note_on avec durées
+            active_notes = {}  # (channel, note) -> (start_time, velocity)
+            current_time = 0.0
+            
+            for msg in mido.merge_tracks(mid.tracks):
+                current_time += msg.time
+                
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    key = (msg.channel, msg.note)
+                    active_notes[key] = (current_time, msg.velocity)
+                    
+                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    key = (msg.channel, msg.note)
+                    if key in active_notes:
+                        start_time, velocity = active_notes.pop(key)
+                        duration = max(0.1, current_time - start_time)
+                        self.events.append(MidiEvent(
+                            time=start_time,
+                            note=msg.note,
+                            velocity=velocity,
+                            duration=duration
+                        ))
+            
+            # Trier par temps
+            self.events.sort(key=lambda e: e.time)
+            self.midi_duration = current_time
+            self.current_time = 0
+            self.redraw()
+            
+        except Exception as e:
+            print(f"Erreur chargement MIDI: {e}")
+    
+    def time_to_x(self, event_time):
+        """Convertit un temps en position X (relatif au temps courant)"""
+        return self.playhead_x + (event_time - self.current_time) * self.pixels_per_second
+    
+    def note_to_y(self, midi_note):
+        """Convertit une note MIDI en position Y sur la partition"""
+        position, clef = note_to_staff_position(midi_note)
+        
+        if clef == "treble":
+            base_y = self.treble_center_y
+        else:
+            base_y = self.bass_center_y
+        
+        # Chaque position = demi-interligne
+        y = base_y - position * (self.line_spacing / 2)
+        return y, clef
+    
+    def draw_staff_lines(self):
+        """Dessine les lignes des deux portées"""
+        width = self.winfo_width()
+        if width < 10:
+            width = 800
+        
+        # 5 lignes par portée
+        for i in range(-2, 3):
+            # Clé de sol
+            y = self.treble_center_y + i * self.line_spacing
+            self.create_line(0, y, width, y, fill=Colors.STAFF_LINE, width=1, tags="staff")
+            
+            # Clé de fa
+            y = self.bass_center_y + i * self.line_spacing
+            self.create_line(0, y, width, y, fill=Colors.STAFF_LINE, width=1, tags="staff")
+        
+        # Accolade et barre de début
+        top = self.treble_center_y - 2 * self.line_spacing
+        bottom = self.bass_center_y + 2 * self.line_spacing
+        
+        self.create_line(self.margin_left - 20, top, self.margin_left - 20, bottom, 
+                        fill=Colors.TEXT_PRIMARY, width=2, tags="staff")
+        
+        # Clé de Sol (symbole Unicode)
+        self.create_text(self.margin_left - 45, self.treble_center_y + 8, 
+                        text="𝄞", font=("Times New Roman", 42), 
+                        fill=Colors.TEXT_PRIMARY, anchor="w", tags="staff")
+        
+        # Clé de Fa
+        self.create_text(self.margin_left - 45, self.bass_center_y - 5, 
+                        text="𝄢", font=("Times New Roman", 38), 
+                        fill=Colors.TEXT_PRIMARY, anchor="w", tags="staff")
+    
+    def draw_ledger_lines(self, x, y, clef):
+        """Dessine les lignes supplémentaires si nécessaire"""
+        if clef == "treble":
+            staff_top = self.treble_center_y - 2 * self.line_spacing
+            staff_bottom = self.treble_center_y + 2 * self.line_spacing
+        else:
+            staff_top = self.bass_center_y - 2 * self.line_spacing
+            staff_bottom = self.bass_center_y + 2 * self.line_spacing
+        
+        line_width = self.note_head_rx * 2 + 8
+        
+        # Lignes au-dessus
+        if y < staff_top - 2:
+            ly = staff_top - self.line_spacing
+            while ly >= y - 2:
+                self.create_line(x - line_width/2, ly, x + line_width/2, ly,
+                               fill=Colors.STAFF_LINE, width=1, tags="note")
+                ly -= self.line_spacing
+        
+        # Lignes en-dessous
+        if y > staff_bottom + 2:
+            ly = staff_bottom + self.line_spacing
+            while ly <= y + 2:
+                self.create_line(x - line_width/2, ly, x + line_width/2, ly,
+                               fill=Colors.STAFF_LINE, width=1, tags="note")
+                ly += self.line_spacing
+        
+        # Ligne du Do central (entre les deux portées)
+        middle_c_y = (self.treble_center_y + self.bass_center_y) / 2
+        if abs(y - middle_c_y) < self.line_spacing / 2:
+            self.create_line(x - line_width/2, middle_c_y, x + line_width/2, middle_c_y,
+                           fill=Colors.STAFF_LINE, width=1, tags="note")
+    
+    def draw_note(self, event, state="future"):
+        """Dessine une note sur la partition"""
+        x = self.time_to_x(event.time)
+        y, clef = self.note_to_y(event.note)
+        
+        # Couleur selon l'état
+        if state == "past":
+            color = Colors.NOTE_PAST
+        elif state == "current":
+            color = Colors.NOTE_CURRENT
+        else:
+            # Future: couleur selon la main
+            color = Colors.RIGHT_HAND if event.is_right_hand else Colors.LEFT_HAND
+        
+        # Lignes supplémentaires
+        self.draw_ledger_lines(x, y, clef)
+        
+        # Altération (dièse)
+        if is_sharp(event.note):
+            self.create_text(x - self.note_head_rx - 12, y, text="♯",
+                           font=("Arial", 14), fill=color, tags="note")
+        
+        # Tête de note (ovale remplie pour noire/croche, vide pour blanche/ronde)
+        rx, ry = self.note_head_rx, self.note_head_ry
+        
+        if event.duration >= 1.5:  # Ronde ou plus
+            self.create_oval(x - rx, y - ry, x + rx, y + ry,
+                           outline=color, width=2, tags="note")
+        else:
+            self.create_oval(x - rx, y - ry, x + rx, y + ry,
+                           fill=color, outline=color, tags="note")
+        
+        # Hampe (pas pour les rondes)
+        if event.duration < 3.0:
+            stem_length = 35
+            # Direction de la hampe selon la position sur la portée
+            if clef == "treble":
+                stem_up = y > self.treble_center_y
+            else:
+                stem_up = y > self.bass_center_y
+            
+            if stem_up:
+                stem_x = x + rx - 1
+                self.create_line(stem_x, y, stem_x, y - stem_length,
+                               fill=color, width=1.5, tags="note")
+            else:
+                stem_x = x - rx + 1
+                self.create_line(stem_x, y, stem_x, y + stem_length,
+                               fill=color, width=1.5, tags="note")
+        
+        # Effet de surbrillance pour note courante
+        if state == "current":
+            self.create_oval(x - rx - 5, y - ry - 5, x + rx + 5, y + ry + 5,
+                           outline=Colors.NOTE_CURRENT, width=2, tags="note")
+            # Afficher le nom de la note
+            self.create_text(x, y - ry - 15, text=event.name,
+                           font=("Arial", 10, "bold"), fill=Colors.NOTE_CURRENT, tags="note")
+    
+    def draw_playhead(self):
+        """Dessine la ligne de lecture verticale"""
+        top = self.treble_center_y - 3 * self.line_spacing
+        bottom = self.bass_center_y + 3 * self.line_spacing
+        
+        # Ligne rouge
+        self.create_line(self.playhead_x, top, self.playhead_x, bottom,
+                        fill=Colors.PLAYHEAD, width=2, tags="playhead")
+        
+        # Triangle en haut
+        self.create_polygon(
+            self.playhead_x - 8, top - 12,
+            self.playhead_x + 8, top - 12,
+            self.playhead_x, top - 2,
+            fill=Colors.PLAYHEAD, tags="playhead"
+        )
+    
+    def redraw(self):
+        """Redessine toute la partition"""
+        self.delete("all")
+        
+        width = self.winfo_width()
+        if width < 10:
+            return
+        
+        # Fond
+        self.create_rectangle(0, 0, width, self.winfo_height(), 
+                            fill=Colors.STAFF_BG, outline="", tags="bg")
+        
+        # Portées
+        self.draw_staff_lines()
+        
+        # Calculer la plage de temps visible
+        time_left = self.current_time - (self.playhead_x / self.pixels_per_second)
+        time_right = self.current_time + ((width - self.playhead_x) / self.pixels_per_second)
+        
+        # Dessiner les notes visibles
+        for event in self.events:
+            # Filtrer les notes hors écran
+            if event.time < time_left - 1 or event.time > time_right + 1:
+                continue
+            
+            # Déterminer l'état de la note
+            delta = event.time - self.current_time
+            if delta < -0.05:
+                state = "past"
+            elif delta < 0.3:
+                state = "current"
+            else:
+                state = "future"
+            
+            self.draw_note(event, state)
+        
+        # Tête de lecture
+        self.draw_playhead()
+    
+    def update_time(self, t):
+        """Met à jour le temps courant et redessine"""
+        self.current_time = t
+        self.redraw()
+    
+    def get_notes_at_time(self, t, tolerance=0.2):
+        """Retourne les notes à jouer à un instant donné"""
+        return [e for e in self.events if abs(e.time - t) < tolerance]
+
+
+class MiniKeyboard(ctk.CTkCanvas):
+    """Mini clavier de piano pour visualisation"""
+    
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, bg=Colors.BG_CARD, highlightthickness=0, height=70, **kwargs)
+        
+        self.active_notes = set()
+        self.start_note = 36  # C2
+        self.end_note = 96    # C7
+        
+        self.bind("<Configure>", lambda e: self.redraw())
+    
+    def redraw(self):
+        self.delete("all")
+        
+        width = self.winfo_width()
+        height = self.winfo_height()
+        
+        if width < 50:
+            return
+        
+        # Compter les touches blanches
+        white_notes = [n for n in range(self.start_note, self.end_note + 1) if not is_sharp(n)]
+        num_white = len(white_notes)
+        
+        key_width = width / num_white
+        white_height = height - 5
+        black_height = white_height * 0.6
+        
+        # Dessiner touches blanches
+        x = 0
+        white_x = {}
+        for note in range(self.start_note, self.end_note + 1):
+            if not is_sharp(note):
+                is_active = note in self.active_notes
+                color = Colors.ACCENT_SUCCESS if is_active else "#E8E8E8"
+                self.create_rectangle(x, 5, x + key_width - 1, white_height,
+                                     fill=color, outline="#888", width=1)
+                white_x[note] = x
+                
+                # Marquer Do central
+                if note == 60:
+                    self.create_oval(x + key_width/2 - 3, white_height - 12,
+                                   x + key_width/2 + 3, white_height - 6,
+                                   fill=Colors.ACCENT_PRIMARY, outline="")
+                x += key_width
+        
+        # Dessiner touches noires
+        for note in range(self.start_note, self.end_note + 1):
+            if is_sharp(note):
+                prev_white = note - 1
+                if prev_white in white_x:
+                    bx = white_x[prev_white] + key_width * 0.7
+                    bw = key_width * 0.6
+                    is_active = note in self.active_notes
+                    color = Colors.LEFT_HAND if is_active else "#1A1A2E"
+                    self.create_rectangle(bx, 5, bx + bw, black_height,
+                                         fill=color, outline="#333")
+    
+    def set_active(self, notes):
+        self.active_notes = set(notes)
+        self.redraw()
+    
+    def add_note(self, note):
+        self.active_notes.add(note)
+        self.redraw()
+    
+    def remove_note(self, note):
+        self.active_notes.discard(note)
+        self.redraw()
+
+
 class PianoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         self.loop = asyncio.new_event_loop()
-        self.bt_thread = threading.Thread(target=self.start_loop, daemon=True)
+        self.bt_thread = threading.Thread(target=self._run_loop, daemon=True)
         self.bt_thread.start()
         
         self.bt_manager = BluetoothManager(self.loop, input_callback=self.on_piano_input)
@@ -196,463 +588,451 @@ class PianoApp(ctk.CTk):
         self.stop_event = threading.Event()
         self.rewind_event = threading.Event()
         self.loop_playback = False
-        self.playback_mode = ctk.StringVar(value="Lecture Simple")
+        self.playback_mode = ctk.StringVar(value="simple")
         self.next_note_event = threading.Event()
         
-        # Visualisation
-        self.midi_duration = 0
-        self.pixels_per_second = 100 # Vitesse de défilement visuel
-        self.staff_spacing = 10 # Espace entre lignes
+        self.title("🎹 Piano Master")
+        self.geometry("1400x850")
+        self.configure(fg_color=Colors.BG_DARK)
         
-        self.title("Piano Bluetooth Master")
-        self.geometry("1400x900")
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self.setup_sidebar()
-        self.setup_main_area()
         
-        # Tentative connexion auto
+        self._setup_sidebar()
+        self._setup_main()
+        
+        # Auto-reconnexion
         if self.bt_manager.device_address:
-            self.log("Tentative de reconnexion auto...")
-            self.run_async(self.bt_manager.connect(), self.on_connect_success, self.on_connect_fail)
+            self.log("🔄 Reconnexion...")
+            self.run_async(self.bt_manager.connect(), self._on_connect_ok, self._on_connect_fail)
 
-    def start_loop(self):
+    def _run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    def run_async(self, coro, callback_success=None, callback_error=None):
+    def run_async(self, coro, on_success=None, on_error=None):
         def wrapper():
             future = asyncio.run_coroutine_threadsafe(coro, self.loop)
             try:
                 res = future.result()
-                if callback_success: self.after(0, callback_success, res)
+                if on_success:
+                    self.after(0, on_success, res)
             except Exception as e:
-                if callback_error: self.after(0, callback_error, e)
+                if on_error:
+                    self.after(0, on_error, e)
         threading.Thread(target=wrapper, daemon=True).start()
 
-    def setup_sidebar(self):
-        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(4, weight=1)
+    def _setup_sidebar(self):
+        sidebar = ctk.CTkFrame(self, width=260, corner_radius=0, fg_color=Colors.BG_CARD)
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_propagate(False)
         
-        ctk.CTkLabel(self.sidebar_frame, text="🎹 Piano Master", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=(20, 10))
+        # Titre
+        ctk.CTkLabel(sidebar, text="🎹 Piano Master",
+                    font=ctk.CTkFont(size=22, weight="bold"),
+                    text_color=Colors.TEXT_PRIMARY).pack(pady=(30, 5))
         
-        self.status_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.status_frame.grid(row=1, column=0, padx=20, pady=10)
-        self.status_indicator = ctk.CTkLabel(self.status_frame, text="●", text_color="red", font=("Arial", 24))
-        self.status_indicator.pack(side="left")
-        self.status_text = ctk.CTkLabel(self.status_frame, text="Déconnecté")
-        self.status_text.pack(side="left", padx=5)
+        ctk.CTkLabel(sidebar, text="Apprentissage MIDI Bluetooth",
+                    font=ctk.CTkFont(size=11),
+                    text_color=Colors.TEXT_SECONDARY).pack()
         
-        self.btn_connect = ctk.CTkButton(self.sidebar_frame, text="Connecter Piano", command=self.open_connect_dialog)
-        self.btn_connect.grid(row=2, column=0, padx=20, pady=10)
-        self.btn_load = ctk.CTkButton(self.sidebar_frame, text="Ouvrir Fichier MIDI", command=self.load_midi_file, fg_color="#E07A5F", hover_color="#C45A40")
-        self.btn_load.grid(row=3, column=0, padx=20, pady=10)
-
-    def setup_main_area(self):
-        self.main_frame = ctk.CTkFrame(self, corner_radius=20, fg_color="#f5f5f5")
-        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        self.main_frame.grid_columnconfigure(0, weight=1)
-        self.main_frame.grid_rowconfigure(2, weight=1) 
-
-        self.info_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.info_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=10)
-        self.lbl_filename = ctk.CTkLabel(self.info_frame, text="Partition vierge", font=("Arial", 16), text_color="#333")
-        self.lbl_filename.pack(side="left")
-        self.lbl_current_notes = ctk.CTkLabel(self.info_frame, text="-", font=("Arial", 18, "bold"), text_color="#3B8ED0")
-        self.lbl_current_notes.pack(side="right")
-
-        # --- PARTITION SCROLLABLE ---
-        self.canvas_frame = ctk.CTkFrame(self.main_frame, fg_color="white", border_width=2, border_color="#ccc")
-        self.canvas_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
+        # Statut
+        status_frame = ctk.CTkFrame(sidebar, fg_color=Colors.BG_ELEVATED, corner_radius=10)
+        status_frame.pack(pady=25, padx=20, fill="x")
         
-        self.sheet_music = ctk.CTkCanvas(self.canvas_frame, bg="white", highlightthickness=0)
-        self.sheet_music.pack(fill="both", expand=True)
+        inner = ctk.CTkFrame(status_frame, fg_color="transparent")
+        inner.pack(pady=12, padx=15, fill="x")
         
-        # Barre de lecture (fixe visuellement au début, le fond bougera)
-        # Mais ici on bouge le scroll, donc la barre avance en coordonnées absolues
-        self.sheet_music.create_line(0, 0, 0, 2000, fill="#FF5555", width=2, tags="playhead")
+        self.status_dot = ctk.CTkLabel(inner, text="●", text_color="#EF4444", font=("Arial", 14))
+        self.status_dot.pack(side="left")
+        
+        self.status_label = ctk.CTkLabel(inner, text="Déconnecté",
+                                        font=ctk.CTkFont(size=13),
+                                        text_color=Colors.TEXT_SECONDARY)
+        self.status_label.pack(side="left", padx=8)
+        
+        self.device_label = ctk.CTkLabel(status_frame, text="Aucun appareil",
+                                        font=ctk.CTkFont(size=10),
+                                        text_color=Colors.TEXT_MUTED)
+        self.device_label.pack(pady=(0, 10))
+        
+        # Boutons
+        self.btn_connect = ctk.CTkButton(sidebar, text="Connecter Piano",
+                                        font=ctk.CTkFont(size=14, weight="bold"),
+                                        fg_color=Colors.ACCENT_PRIMARY,
+                                        height=42, corner_radius=8,
+                                        command=self.open_connect_dialog)
+        self.btn_connect.pack(pady=10, padx=20, fill="x")
+        
+        self.btn_load = ctk.CTkButton(sidebar, text="📁 Ouvrir fichier MIDI",
+                                     font=ctk.CTkFont(size=13),
+                                     fg_color=Colors.BG_ELEVATED,
+                                     text_color=Colors.TEXT_PRIMARY,
+                                     height=40, corner_radius=8,
+                                     command=self.load_midi_file)
+        self.btn_load.pack(pady=5, padx=20, fill="x")
+        
+        # Séparateur
+        ctk.CTkFrame(sidebar, height=1, fg_color=Colors.TEXT_MUTED).pack(pady=20, padx=25, fill="x")
+        
+        # Mode
+        ctk.CTkLabel(sidebar, text="Mode de lecture",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    text_color=Colors.TEXT_SECONDARY).pack(padx=20, anchor="w")
+        
+        ctk.CTkRadioButton(sidebar, text="Lecture continue",
+                          variable=self.playback_mode, value="simple",
+                          font=ctk.CTkFont(size=12),
+                          fg_color=Colors.ACCENT_PRIMARY,
+                          text_color=Colors.TEXT_PRIMARY).pack(padx=30, pady=8, anchor="w")
+        
+        ctk.CTkRadioButton(sidebar, text="Note par note",
+                          variable=self.playback_mode, value="step",
+                          font=ctk.CTkFont(size=12),
+                          fg_color=Colors.ACCENT_PRIMARY,
+                          text_color=Colors.TEXT_PRIMARY).pack(padx=30, anchor="w")
+        
+        self.loop_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(sidebar, text="Répéter en boucle",
+                       variable=self.loop_var,
+                       font=ctk.CTkFont(size=12),
+                       fg_color=Colors.ACCENT_PRIMARY,
+                       text_color=Colors.TEXT_PRIMARY,
+                       command=lambda: setattr(self, 'loop_playback', self.loop_var.get())
+                       ).pack(padx=30, pady=15, anchor="w")
+        
+        # Légende
+        legend = ctk.CTkFrame(sidebar, fg_color=Colors.BG_ELEVATED, corner_radius=10)
+        legend.pack(pady=20, padx=20, fill="x", side="bottom")
+        
+        ctk.CTkLabel(legend, text="Légende", font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color=Colors.TEXT_SECONDARY).pack(pady=(10, 5))
+        
+        for txt, col in [("● Main droite (≥Do4)", Colors.RIGHT_HAND),
+                        ("● Main gauche (<Do4)", Colors.LEFT_HAND),
+                        ("● Note en cours", Colors.NOTE_CURRENT)]:
+            ctk.CTkLabel(legend, text=txt, font=ctk.CTkFont(size=10),
+                        text_color=col).pack(anchor="w", padx=15)
+        
+        ctk.CTkLabel(legend, text="").pack(pady=3)
 
-        self.progress_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.progress_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(10, 0))
-        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, progress_color="#3B8ED0")
-        self.progress_bar.pack(fill="x", pady=5)
-        self.progress_bar.set(0)
-        self.lbl_time = ctk.CTkLabel(self.progress_frame, text="00:00 / 00:00", text_color="#555")
-        self.lbl_time.pack()
-
+    def _setup_main(self):
+        main = ctk.CTkFrame(self, corner_radius=0, fg_color=Colors.BG_DARK)
+        main.grid(row=0, column=1, sticky="nsew", padx=15, pady=15)
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(1, weight=1)
+        
+        # Header
+        header = ctk.CTkFrame(main, fg_color="transparent", height=50)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        
+        self.file_label = ctk.CTkLabel(header, text="Aucun fichier",
+                                       font=ctk.CTkFont(size=18, weight="bold"),
+                                       text_color=Colors.TEXT_PRIMARY)
+        self.file_label.pack(side="left")
+        
+        self.info_label = ctk.CTkLabel(header, text="",
+                                       font=ctk.CTkFont(size=12),
+                                       text_color=Colors.TEXT_SECONDARY)
+        self.info_label.pack(side="right")
+        
+        # Partition
+        sheet_frame = ctk.CTkFrame(main, fg_color=Colors.BG_CARD, corner_radius=12)
+        sheet_frame.grid(row=1, column=0, sticky="nsew")
+        sheet_frame.grid_columnconfigure(0, weight=1)
+        sheet_frame.grid_rowconfigure(0, weight=1)
+        
+        self.sheet_music = SheetMusicCanvas(sheet_frame)
+        self.sheet_music.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        
+        # Clavier
+        kb_frame = ctk.CTkFrame(main, fg_color=Colors.BG_CARD, corner_radius=10, height=85)
+        kb_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        kb_frame.grid_columnconfigure(0, weight=1)
+        
+        self.mini_keyboard = MiniKeyboard(kb_frame)
+        self.mini_keyboard.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        
         # Contrôles
-        self.controls_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.controls_frame.grid(row=3, column=0, pady=20)
-        ctk.CTkLabel(self.controls_frame, text="Mode :", text_color="#333").pack(side="left", padx=5)
-        self.mode_selector = ctk.CTkSegmentedButton(self.controls_frame, values=["Lecture Simple", "Note à Note"], variable=self.playback_mode)
-        self.mode_selector.pack(side="left", padx=10)
-        ctk.CTkButton(self.controls_frame, text="⏮", width=40, command=self.rewind, fg_color="#666").pack(side="left", padx=20)
-        self.btn_play = ctk.CTkButton(self.controls_frame, text="▶ Lecture", width=120, height=40, font=("Arial", 15, "bold"), command=self.toggle_play)
+        ctrl_frame = ctk.CTkFrame(main, fg_color="transparent")
+        ctrl_frame.grid(row=3, column=0, sticky="ew", pady=15)
+        
+        # Progression
+        prog_frame = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
+        prog_frame.pack(fill="x", pady=(0, 10))
+        
+        self.time_label = ctk.CTkLabel(prog_frame, text="00:00",
+                                       font=ctk.CTkFont(family="monospace", size=12),
+                                       text_color=Colors.TEXT_SECONDARY)
+        self.time_label.pack(side="left")
+        
+        self.progress = ctk.CTkProgressBar(prog_frame, progress_color=Colors.ACCENT_PRIMARY,
+                                          fg_color=Colors.BG_ELEVATED, height=6)
+        self.progress.pack(side="left", fill="x", expand=True, padx=15)
+        self.progress.set(0)
+        
+        self.duration_label = ctk.CTkLabel(prog_frame, text="00:00",
+                                          font=ctk.CTkFont(family="monospace", size=12),
+                                          text_color=Colors.TEXT_SECONDARY)
+        self.duration_label.pack(side="right")
+        
+        # Boutons lecture
+        btn_frame = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
+        btn_frame.pack()
+        
+        ctk.CTkButton(btn_frame, text="⏮", width=50, height=50,
+                     font=ctk.CTkFont(size=18),
+                     fg_color=Colors.BG_ELEVATED,
+                     corner_radius=25,
+                     command=self.rewind).pack(side="left", padx=5)
+        
+        self.btn_play = ctk.CTkButton(btn_frame, text="▶", width=65, height=65,
+                                     font=ctk.CTkFont(size=26),
+                                     fg_color=Colors.ACCENT_PRIMARY,
+                                     corner_radius=32,
+                                     command=self.toggle_play)
         self.btn_play.pack(side="left", padx=10)
-        self.btn_loop = ctk.CTkCheckBox(self.controls_frame, text="Répéter", command=self.toggle_loop, text_color="#333")
-        self.btn_loop.pack(side="left", padx=10)
-
+        
+        ctk.CTkButton(btn_frame, text="⏹", width=50, height=50,
+                     font=ctk.CTkFont(size=18),
+                     fg_color=Colors.BG_ELEVATED,
+                     corner_radius=25,
+                     command=self.stop).pack(side="left", padx=5)
+        
         # Logs
-        self.log_box = ctk.CTkTextbox(self.main_frame, height=100, fg_color="#fff", text_color="#333", border_width=1)
-        self.log_box.grid(row=4, column=0, padx=20, pady=10, sticky="ew")
+        self.log_box = ctk.CTkTextbox(main, height=60,
+                                     font=ctk.CTkFont(family="monospace", size=10),
+                                     fg_color=Colors.BG_CARD,
+                                     text_color=Colors.TEXT_SECONDARY,
+                                     corner_radius=8)
+        self.log_box.grid(row=4, column=0, sticky="ew", pady=(10, 0))
 
-    # --- DESSIN PARTITION ---
-    def draw_staves(self, total_width):
-        """Dessine le système de portées (Grand Staff)."""
-        self.sheet_music.delete("staff")
-        
-        # Constantes Y
-        treble_y = 150 # Centre approximatif clé de Sol
-        bass_y = 350   # Centre approximatif clé de Fa
-        
-        # Lignes horizontales (5 par portée)
-        # Portée du haut (Sol)
-        for i in range(-2, 3): # -2, -1, 0, 1, 2 autour du centre
-            y = treble_y + (i * self.staff_spacing)
-            self.sheet_music.create_line(0, y, total_width, y, fill="#333", width=1, tags="staff")
-            
-        # Portée du bas (Fa)
-        for i in range(-2, 3):
-            y = bass_y + (i * self.staff_spacing)
-            self.sheet_music.create_line(0, y, total_width, y, fill="#333", width=1, tags="staff")
-            
-        # Barre de mesure initiale et accolade
-        self.sheet_music.create_line(20, treble_y - 2*self.staff_spacing, 20, bass_y + 2*self.staff_spacing, width=3, fill="black", tags="staff_static")
-        
-        # Clés (Simulées par texte)
-        self.sheet_music.create_text(35, treble_y, text="𝄞", font=("Times", 40), tags="staff_static")
-        self.sheet_music.create_text(35, bass_y, text="𝄢", font=("Times", 40), tags="staff_static")
-
-    def draw_note(self, x, midi_note, duration_px):
-        """Dessine une note sur la portée appropriée."""
-        # Découpage du clavier : Do Central (60)
-        # >= 60 : Main droite (Haut)
-        # < 60  : Main gauche (Bas)
-        
-        if midi_note >= 60:
-            base_y = 150 # Centre Clé Sol
-            offset = get_staff_position(midi_note, "treble")
-        else:
-            base_y = 350 # Centre Clé Fa
-            offset = get_staff_position(midi_note, "bass")
-            
-        y = base_y + (offset * (self.staff_spacing / 2))
-        
-        # Couleur : Noir par défaut
-        color = "black"
-        
-        # Dessin Note (Ovale)
-        radius_x = 6
-        radius_y = 5
-        self.sheet_music.create_oval(x, y - radius_y, x + radius_x*2, y + radius_y, fill=color, tags="note")
-        
-        # Hampe (Stem)
-        # Règle simple : Si note en haut de portée -> tige bas, sinon tige haut
-        stem_len = 35
-        if offset > 0: # Note basse sur la portée -> Tige haut
-            stem_x = x + radius_x*2
-            stem_y2 = y - stem_len
-        else: # Note haute -> Tige bas
-            stem_x = x
-            stem_y2 = y + stem_len
-            
-        self.sheet_music.create_line(stem_x, y, stem_x, stem_y2, width=1.5, fill=color, tags="note")
-        
-        # Ledger Lines (Lignes supplémentaires)
-        # Limites portée : base_y +/- 2*spacing
-        top_line = base_y - 2*self.staff_spacing
-        bot_line = base_y + 2*self.staff_spacing
-        
-        if y < top_line - 2: # Au dessus
-            curr_y = top_line - self.staff_spacing
-            while curr_y > y + 2:
-                self.sheet_music.create_line(x-4, curr_y, x+radius_x*2+4, curr_y, width=1, tags="note")
-                curr_y -= self.staff_spacing
-        elif y > bot_line + 2: # En dessous
-            curr_y = bot_line + self.staff_spacing
-            while curr_y < y - 2:
-                self.sheet_music.create_line(x-4, curr_y, x+radius_x*2+4, curr_y, width=1, tags="note")
-                curr_y += self.staff_spacing
-                
-        # TODO: Dièse/Bémol si besoin (non implémenté graphiquement pour simplifier)
-
-    def draw_midi_file(self, filepath):
-        self.sheet_music.delete("note")
-        self.sheet_music.delete("staff")
-        self.sheet_music.delete("playhead")
-        
+    # --- Lecture ---
+    def _play_thread(self):
         try:
-            mid = mido.MidiFile(filepath)
-            events = []
-            current_time = 0.0
-            
-            # Pré-calcul
-            for msg in mido.merge_tracks(mid.tracks):
-                current_time += msg.time
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    events.append({'t': current_time, 'n': msg.note})
-            
-            self.midi_duration = current_time
-            # Largeur totale = temps * pixels_par_sec + marge
-            total_width = (self.midi_duration * self.pixels_per_second) + 1000
-            
-            # Configurer le scroll
-            self.sheet_music.configure(scrollregion=(0, 0, total_width, 600))
-            
-            # Dessiner le décor
-            self.draw_staves(total_width)
-            
-            # Dessiner toutes les notes
-            for evt in events:
-                x = 100 + (evt['t'] * self.pixels_per_second)
-                self.draw_note(x, evt['n'], 20) # 20px largeur défaut
-                
-            # Playhead au dessus
-            self.sheet_music.create_line(100, 0, 100, 600, fill="#FF5555", width=2, tags="playhead")
-
-        except Exception as e:
-            self.log(f"Erreur dessin: {e}")
-
-    def update_view(self, current_time):
-        # Position X absolue de la tête de lecture
-        x = 100 + (current_time * self.pixels_per_second)
-        self.sheet_music.coords("playhead", x, 0, x, 600)
-        
-        # Auto-Scroll : Garder le playhead à 20% de l'écran gauche
-        view_w = self.sheet_music.winfo_width()
-        if view_w < 100: view_w = 800
-        
-        target_left = x - (view_w * 0.2)
-        if target_left < 0: target_left = 0
-        
-        # ScrollTo
-        bbox = self.sheet_music.bbox("all")
-        if bbox:
-            scroll_w = bbox[2]
-            if scroll_w > 0:
-                self.sheet_music.xview_moveto(target_left / scroll_w)
-
-    def show_active_notes(self, active_list, x_now):
-        self.sheet_music.delete("active")
-        for note in active_list:
-            # Main Droite (Vert) / Main Gauche (Orange)
-            color = "#2CC985" if note >= 60 else "#FF8C00"
-            
-            if note >= 60:
-                base_y = 150
-                offset = get_staff_position(note, "treble")
-            else:
-                base_y = 350
-                offset = get_staff_position(note, "bass")
-            
-            y = base_y + (offset * (self.staff_spacing / 2))
-            
-            # Surbrillance
-            self.sheet_music.create_oval(x_now - 8, y - 8, x_now + 20, y + 8, outline=color, width=3, tags="active")
-
-    # --- MOTEUR AUDIO ---
-    def play_midi_thread(self):
-        try:
-            self.log("▶ Lecture...")
             mid = mido.MidiFile(self.current_midi_file)
-            dur = mid.length
-            
-            active_notes = set() # Set d'entiers
-            note_names = []      # Liste de noms
-            
-            msgs = list(mido.merge_tracks(mid.tracks))
-            current_time = 0.0
+            duration = mid.length
             
             while True:
-                self.after(0, lambda: self.update_ui(0, dur, "-"))
-                mode = self.playback_mode.get()
                 current_time = 0.0
+                mode = self.playback_mode.get()
                 
-                if mode == "Lecture Simple":
-                    # Moteur Flux (Mid.play)
-                    playback = mid.play(meta_messages=True)
-                    for msg in playback:
-                        if self.stop_event.is_set(): return
+                self.after(0, lambda: self._update_ui(0, duration))
+                
+                if mode == "simple":
+                    for msg in mid.play(meta_messages=True):
+                        if self.stop_event.is_set():
+                            return
                         while self.is_paused:
-                            if self.stop_event.is_set(): return
-                            if self.rewind_event.is_set(): break
-                            time.sleep(0.1)
-                        if self.rewind_event.is_set(): break
+                            if self.stop_event.is_set():
+                                return
+                            if self.rewind_event.is_set():
+                                break
+                            time.sleep(0.05)
+                        if self.rewind_event.is_set():
+                            break
                         
                         current_time += msg.time
                         
                         if not msg.is_meta:
-                            # Synchro stricte
-                            fut = asyncio.run_coroutine_threadsafe(self.bt_manager.send_midi(msg.bytes()), self.loop)
-                            try: fut.result(timeout=1.0)
-                            except: pass
+                            asyncio.run_coroutine_threadsafe(
+                                self.bt_manager.send_midi(msg.bytes()), self.loop)
                             
-                            self.process_msg(msg, active_notes, note_names)
-                            
-                            # UI Update
-                            x = 100 + (current_time * self.pixels_per_second)
-                            act_copy = list(active_notes)
-                            txt = " | ".join(note_names[-4:])
-                            self.after(0, lambda t=current_time, tx=txt, a=act_copy, xx=x: 
-                                       [self.update_ui(t, dur, tx), self.show_active_notes(a, xx)])
-
-                else:
-                    # Moteur Pas à Pas
-                    for i, msg in enumerate(msgs):
-                        if self.stop_event.is_set(): return
-                        if self.rewind_event.is_set(): break
-                        while self.is_paused:
-                            if self.stop_event.is_set(): return
-                            if self.rewind_event.is_set(): break
-                            time.sleep(0.1)
-                        if self.rewind_event.is_set(): break
-                        
-                        current_time += msg.time
-                        
-                        if not msg.is_meta:
-                            asyncio.run_coroutine_threadsafe(self.bt_manager.send_midi(msg.bytes()), self.loop)
-                            self.process_msg(msg, active_notes, note_names)
-                            
-                            # Peek notes suivantes
-                            next_s = []
-                            idx = i+1
-                            while len(next_s)<3 and idx<len(msgs):
-                                if msgs[idx].type=='note_on' and msgs[idx].velocity>0:
-                                    next_s.append(get_note_name(msgs[idx].note))
-                                idx+=1
-                            
-                            x = 100 + (current_time * self.pixels_per_second)
-                            act_copy = list(active_notes)
-                            txt = f"{' '.join(note_names) if note_names else '-'} >> {' '.join(next_s)}"
-                            
-                            self.after(0, lambda t=current_time, tx=txt, a=act_copy, xx=x: 
-                                       [self.update_ui(t, dur, tx), self.show_active_notes(a, xx)])
-                            
-                            # Blocage
                             if msg.type == 'note_on' and msg.velocity > 0:
-                                self.next_note_event.clear()
-                                self.log(f"🎹 Jouez: {get_note_name(msg.note)}")
-                                while not self.next_note_event.is_set():
-                                    if self.stop_event.is_set() or self.rewind_event.is_set(): break
-                                    time.sleep(0.05)
-
+                                self.after(0, lambda n=msg.note: self.mini_keyboard.add_note(n))
+                            else:
+                                self.after(0, lambda n=msg.note: self.mini_keyboard.remove_note(n))
+                        
+                        self.after(0, lambda t=current_time, d=duration: self._update_ui(t, d))
+                else:
+                    # Note par note
+                    msgs = list(mido.merge_tracks(mid.tracks))
+                    for msg in msgs:
+                        if self.stop_event.is_set():
+                            return
+                        if self.rewind_event.is_set():
+                            break
+                        while self.is_paused:
+                            if self.stop_event.is_set():
+                                return
+                            if self.rewind_event.is_set():
+                                break
+                            time.sleep(0.05)
+                        if self.rewind_event.is_set():
+                            break
+                        
+                        current_time += msg.time
+                        
+                        if msg.type == 'note_on' and msg.velocity > 0:
+                            asyncio.run_coroutine_threadsafe(
+                                self.bt_manager.send_midi(msg.bytes()), self.loop)
+                            
+                            self.after(0, lambda n=msg.note: self.mini_keyboard.add_note(n))
+                            self.log(f"🎹 Jouez: {get_note_name(msg.note)}")
+                            self.after(0, lambda t=current_time, d=duration: self._update_ui(t, d))
+                            
+                            self.next_note_event.clear()
+                            while not self.next_note_event.is_set():
+                                if self.stop_event.is_set() or self.rewind_event.is_set():
+                                    break
+                                time.sleep(0.03)
+                            
+                            self.after(0, lambda n=msg.note: self.mini_keyboard.remove_note(n))
+                        
+                        elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                            asyncio.run_coroutine_threadsafe(
+                                self.bt_manager.send_midi(msg.bytes()), self.loop)
+                
                 if self.rewind_event.is_set():
-                    self.log("⏪ Rembobinage...")
+                    self.log("⏪ Retour au début")
                     self.rewind_event.clear()
                     asyncio.run_coroutine_threadsafe(self.bt_manager.send_reset(), self.loop)
+                    self.after(0, lambda: self.mini_keyboard.set_active([]))
                     continue
                 
-                if self.stop_event.is_set() or not self.loop_playback: break
-                self.log("Recommencement...")
-                time.sleep(1)
-
+                if self.stop_event.is_set() or not self.loop_playback:
+                    break
+                
+                self.log("🔄 Répétition...")
+                time.sleep(0.5)
+                
         except Exception as e:
-            self.log(f"Erreur Play: {e}")
+            self.log(f"❌ Erreur: {e}")
         finally:
             self.is_playing = False
-            self.after(0, lambda: self.btn_play.configure(text="▶ Lecture"))
-            if not self.stop_event.is_set(): self.log("Fin.")
+            self.after(0, lambda: self.btn_play.configure(text="▶"))
+            self.after(0, lambda: self.mini_keyboard.set_active([]))
+            self.log("⏹ Terminé")
 
-    def process_msg(self, msg, active_set, name_list):
-        if msg.type == 'note_on' and msg.velocity > 0:
-            self.log(f"ON: {get_note_name(msg.note)}")
-            active_set.add(msg.note)
-            n = get_note_name(msg.note)
-            if n not in name_list: name_list.append(n)
-        elif (msg.type == 'note_off') or (msg.type == 'note_on' and msg.velocity == 0):
-            self.log(f"OFF: {get_note_name(msg.note)}")
-            if msg.note in active_set: active_set.remove(msg.note)
-            n = get_note_name(msg.note)
-            if n in name_list: name_list.remove(n)
-
-    def update_ui(self, t, dur, txt):
+    def _update_ui(self, t, duration):
         try:
-            self.progress_bar.set(t/dur if dur > 0 else 0)
-            self.lbl_time.configure(text=f"{int(t)//60:02}:{int(t)%60:02}")
-            self.lbl_current_notes.configure(text=txt)
-            self.update_view(t)
-        except: pass
+            if duration > 0:
+                self.progress.set(t / duration)
+            self.time_label.configure(text=f"{int(t)//60:02}:{int(t)%60:02}")
+            self.sheet_music.update_time(t)
+        except:
+            pass
 
-    # --- UI & BT Events ---
+    # --- Événements ---
     def on_piano_input(self, note):
-        if self.is_playing and self.playback_mode.get() == "Note à Note":
+        if self.is_playing and self.playback_mode.get() == "step":
             self.next_note_event.set()
-    
+            self.log(f"✓ {get_note_name(note)}")
+
     def log(self, msg):
-        self.log_box.insert("end", f"> {msg}\n")
+        self.log_box.insert("end", f"{msg}\n")
         self.log_box.see("end")
-    
-    def on_connect_success(self, res):
-        self.update_connection_ui(True)
-        self.log(f"Connecté à {self.bt_manager.device_name}")
-    
-    def on_connect_fail(self, err):
-        self.update_connection_ui(False)
-        self.log(f"Erreur: {err}")
-    
-    def update_connection_ui(self, connected):
-        color = "#2CC985" if connected else "red"
-        txt = "Connecté" if connected else "Déconnecté"
-        self.status_indicator.configure(text_color=color)
-        self.status_text.configure(text=txt)
-        self.btn_connect.configure(text="Déconnecter" if connected else "Connecter Piano")
+
+    def _on_connect_ok(self, _):
+        self.status_dot.configure(text_color=Colors.ACCENT_SUCCESS)
+        self.status_label.configure(text="Connecté")
+        self.device_label.configure(text=self.bt_manager.device_name or "Piano")
+        self.btn_connect.configure(text="Déconnecter", fg_color=Colors.BG_ELEVATED)
+        self.log(f"✅ Connecté: {self.bt_manager.device_name}")
+
+    def _on_connect_fail(self, err):
+        self.status_dot.configure(text_color="#EF4444")
+        self.status_label.configure(text="Déconnecté")
+        self.device_label.configure(text="Aucun appareil")
+        self.btn_connect.configure(text="Connecter Piano", fg_color=Colors.ACCENT_PRIMARY)
+        self.log(f"❌ Erreur: {err}")
 
     def open_connect_dialog(self):
         if self.bt_manager.is_connected:
-            self.run_async(self.bt_manager.disconnect(), lambda _: self.update_connection_ui(False))
+            self.run_async(self.bt_manager.disconnect(),
+                          lambda _: self._on_connect_fail(None))
+            self.log("🔌 Déconnexion")
             return
-        d = ctk.CTkToplevel(self)
-        d.geometry("400x300")
-        d.transient(self) 
-        d.grab_set() 
-        d.focus_force() 
         
-        ctk.CTkLabel(d, text="Recherche...").pack(pady=10)
-        s = ctk.CTkScrollableFrame(d)
-        s.pack(fill="both", expand=True)
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Appareils Bluetooth")
+        dialog.geometry("400x350")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(fg_color=Colors.BG_DARK)
+        
+        ctk.CTkLabel(dialog, text="🔍 Recherche...",
+                    font=ctk.CTkFont(size=14, weight="bold"),
+                    text_color=Colors.TEXT_PRIMARY).pack(pady=15)
+        
+        scroll = ctk.CTkScrollableFrame(dialog, fg_color=Colors.BG_CARD, corner_radius=8)
+        scroll.pack(fill="both", expand=True, padx=15, pady=10)
+        
         async def scan():
-            devs = await BleakScanner.discover()
-            for dev in devs:
+            devices = await BleakScanner.discover()
+            for dev in devices:
                 name = dev.name or "Inconnu"
-                ctk.CTkButton(s, text=f"{name}\n{dev.address}", 
-                              command=lambda device=dev: [d.destroy(), self.run_async(self.bt_manager.connect(device), self.on_connect_success, self.on_connect_fail)]).pack(pady=2)
+                ctk.CTkButton(
+                    scroll, text=f"🎹 {name}\n{dev.address}",
+                    font=ctk.CTkFont(size=12),
+                    fg_color=Colors.BG_ELEVATED,
+                    text_color=Colors.TEXT_PRIMARY,
+                    height=55, corner_radius=8, anchor="w",
+                    command=lambda d=dev: [
+                        dialog.destroy(),
+                        self.run_async(self.bt_manager.connect(d),
+                                      self._on_connect_ok, self._on_connect_fail)
+                    ]
+                ).pack(fill="x", pady=4, padx=8)
+        
         self.run_async(scan())
 
     def load_midi_file(self):
-        f = filedialog.askopenfilename(filetypes=[("MIDI", "*.mid")])
-        if f:
-            self.current_midi_file = f
-            self.lbl_filename.configure(text=os.path.basename(f))
-            self.log(f"Chargé: {os.path.basename(f)}")
+        path = filedialog.askopenfilename(
+            title="Ouvrir fichier MIDI",
+            filetypes=[("MIDI", "*.mid *.midi")]
+        )
+        if path:
+            self.current_midi_file = path
+            name = os.path.basename(path)
+            self.file_label.configure(text=name)
+            
+            self.sheet_music.load_midi(path)
+            
+            dur = self.sheet_music.midi_duration
+            self.duration_label.configure(text=f"{int(dur)//60:02}:{int(dur)%60:02}")
+            self.info_label.configure(text=f"{len(self.sheet_music.events)} notes")
+            
+            self.log(f"📂 {name}")
+            self.stop()
             self.run_async(self.bt_manager.send_reset())
-            self.draw_midi_file(f)
-            self.stop_event.set()
-            self.is_playing = False
-            self.btn_play.configure(text="▶ Lecture")
 
     def toggle_play(self):
-        if not self.current_midi_file: return
+        if not self.current_midi_file:
+            self.log("⚠️ Chargez un fichier MIDI")
+            return
+        
         if self.is_playing:
             self.is_paused = not self.is_paused
-            self.btn_play.configure(text="▶ Reprendre" if self.is_paused else "⏸ Pause")
+            self.btn_play.configure(text="▶" if self.is_paused else "⏸")
+            self.log("⏸ Pause" if self.is_paused else "▶ Reprise")
         else:
             self.is_playing = True
             self.is_paused = False
             self.stop_event.clear()
             self.rewind_event.clear()
-            self.btn_play.configure(text="⏸ Pause")
-            threading.Thread(target=self.play_midi_thread, daemon=True).start()
+            self.btn_play.configure(text="⏸")
+            threading.Thread(target=self._play_thread, daemon=True).start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.is_playing = False
+        self.is_paused = False
+        self.btn_play.configure(text="▶")
+        self.progress.set(0)
+        self.time_label.configure(text="00:00")
+        self.sheet_music.update_time(0)
+        self.mini_keyboard.set_active([])
 
     def rewind(self):
-        if self.is_playing: self.rewind_event.set()
+        if self.is_playing:
+            self.rewind_event.set()
         else:
-            self.update_ui(0, 0, "-")
-            self.sheet_music.xview_moveto(0)
+            self.progress.set(0)
+            self.time_label.configure(text="00:00")
+            self.sheet_music.update_time(0)
             self.run_async(self.bt_manager.send_reset())
 
-    def toggle_loop(self):
-        self.loop_playback = bool(self.btn_loop.get())
 
 if __name__ == "__main__":
     app = PianoApp()
