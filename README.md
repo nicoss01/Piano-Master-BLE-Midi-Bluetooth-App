@@ -134,3 +134,48 @@ The app automatically creates a `piano_config.json` file to store the UUID of th
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for more information.
+
+## Compatibility Keyboard Models
+- Yamaha EZ-300
+- Yamaha EZ-220
+- Yamaha EZ-115
+- Yamaha Clavinova CSP-150
+- Yamaha Clavinova CSP-170
+- Yamaha Clavinova CSP-255
+- Yamaha Clavinova CSP-275
+- Yamaha Clavinova CSP-295
+- Casio Casiotone LK-S450
+- Casio Casiotone LK-S250
+- Casio LK-265
+- Casio LK-266
+- Casio LK-136
+- Casio LK-135
+- Casio LK-190
+- The ONE Smart Piano (Upright / Classic)
+- The ONE Smart Keyboard Pro
+- The ONE Light Keyboard Air
+- The ONE COLOR
+- ROLI Lumi Keys Studio Edition
+- ROLI Lumi Keys 1
+- PopuMusic PopuPiano
+- Costway Clavier Pliable 88 Touches (Modèle LED)
+- Costway Clavier Électronique 61 Touches (Modèle LED)
+- Bora BX-20 (Piano Pliable 88 touches)
+- Bora BX-10 (souvent rebadgé)
+- Terence Piano Pliable 88 Touches (Modèle avec lumières)
+- Longeye FOLD I (certaines versions ont les LED)
+- Vangoa VGD-881
+- Souidmy G-310W
+- Alesis Melody 61 MKII
+- RockJam RJ761
+- Schubert Etude 450 USB
+- Schubert Etude 300
+- McGrey LK-6120
+- FunKey 61 Edition Touch
+- Glymnis Clavier Pliable 88 Touches
+- Eastar EK-10S
+- Donner DEK-610
+- Starfavor SP-10
+- Native Instruments Komplete Kontrol S49 (MK2 / MK3)
+- Native Instruments Komplete Kontrol S61 (MK2 / MK3)
+- Native Instruments Komplete Kontrol S88 (MK2 / MK3)
