@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)]()
 [![Bluetooth](https://img.shields.io/badge/Bluetooth-MIDI-blueviolet)]()
 
+![](https://github.com/nicoss01/Piano-Master-BLE-Midi-Bluetooth-App/blob/main/screen.png?raw=true)
+
 **Piano Bluetooth Master** est une application de bureau moderne écrite en Python qui permet de visualiser des fichiers MIDI sous forme de partition déroulante et d'interagir avec un piano numérique via Bluetooth (BLE MIDI).
 
 Elle est conçue pour l'apprentissage, offrant un mode "Pas à pas" qui attend que vous jouiez la bonne note sur votre piano avant d'avancer.
