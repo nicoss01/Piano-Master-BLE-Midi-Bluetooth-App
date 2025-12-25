@@ -1,3 +1,6 @@
 /midi_files/*.mid
 piano_config.json
+/__pycache__/
+/venv/
+.env
 test.py
