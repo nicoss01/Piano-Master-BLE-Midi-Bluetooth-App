@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)]()
-[![Bluetooth](https://img.shields.io/badge/Bluetooth-LE%20MIDI-blueviolet)]()
+[![Bluetooth](https://img.shields.io/badge/Bluetooth-MIDI-blueviolet)]()
 
 **Piano Bluetooth Master** est une application de bureau moderne écrite en Python qui permet de visualiser des fichiers MIDI sous forme de partition déroulante et d'interagir avec un piano numérique via Bluetooth (BLE MIDI).
 
@@ -36,7 +36,7 @@ Elle est conçue pour l'apprentissage, offrant un mode "Pas à pas" qui attend q
 
 1.  Clonez ce dépôt :
     ```bash
-    git clone [https://github.com/votre-username/piano-bluetooth-master.git](https://github.com/votre-username/piano-bluetooth-master.git)
+    git clone [https://github.com/nicoss01/Piano-Master-BLE-Midi-Bluetooth-App.git](hhttps://github.com/nicoss01/Piano-Master-BLE-Midi-Bluetooth-App.git)
     cd piano-bluetooth-master
     ```
 
@@ -86,7 +86,7 @@ L'application crée automatiquement un fichier `piano_config.json` pour mémoris
 
 1.  Clone the repository:
     ```bash
-    git clone [https://github.com/your-username/piano-bluetooth-master.git](https://github.com/your-username/piano-bluetooth-master.git)
+    git clone [https://github.com/nicoss01/Piano-Master-BLE-Midi-Bluetooth-App.git](https://github.com/nicoss01/Piano-Master-BLE-Midi-Bluetooth-App.git)
     cd piano-bluetooth-master
     ```
 
